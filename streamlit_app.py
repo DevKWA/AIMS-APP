@@ -1,12 +1,15 @@
-import os
 import streamlit as st
 import pandas as pd
 import gspread
+from google.oauth2.service_account import Credentials
 
+# ---------------------------
+# Streamlit page config
+# ---------------------------
 st.set_page_config(layout="wide")
 
 # ---------------------------
-# Global CSS for white background and black text
+# Global CSS for styling
 # ---------------------------
 st.markdown(
     """
@@ -14,23 +17,15 @@ st.markdown(
         .stApp {
             background-color: white;
         }
-
         html, body, [class*="css"] {
             color: black !important;
         }
-
         /* Expander full width */
         .streamlit-expander {
             width: 100% !important;
         }
-
         /* DataFrame text color and background */
-        .stDataFrame div {
-            color: black !important;
-            background-color: white !important;
-        }
-
-        .stDataFrame th {
+        .stDataFrame td, .stDataFrame th {
             color: black !important;
             background-color: white !important;
         }
@@ -40,28 +35,35 @@ st.markdown(
 )
 
 # ---------------------------
-# Header image/banner
+# Banner images
 # ---------------------------
 st.image('assets/AULA_HORIZONTAL_GREEN_BANNER.png', use_container_width=True)
 st.image('assets/survivor_dashboard_banner.png', use_container_width=True)
 
 # ---------------------------
-# Google Sheets loader
+# Load Google Sheet
 # ---------------------------
 @st.cache_data(ttl=600)
 def load_sheet(sheet_url, worksheet_name=None):
-    service_account_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if not service_account_path:
-        st.error("❌ Environment variable GOOGLE_APPLICATION_CREDENTIALS not set!")
-        st.stop()
-    gc = gspread.service_account(filename=service_account_path)
+    # Required OAuth scopes
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/drive.file"]
+
+    # Create credentials from st.secrets
+    creds = Credentials.from_service_account_info(
+        st.secrets["google_service_account"],
+        scopes=SCOPES
+    )
+    gc = gspread.authorize(creds)
+
+    # Open sheet and worksheet
     sh = gc.open_by_url(sheet_url)
     ws = sh.worksheet(worksheet_name) if worksheet_name else sh.sheet1
     data = ws.get_all_records()
     return pd.DataFrame(data)
 
 # ---------------------------
-# Sidebar filters
+# Sidebar: sheet URL & worksheet selection
 # ---------------------------
 sheet_url = st.sidebar.text_input("📄 Google Sheet URL (public or private)")
 worksheet_name = None
@@ -69,10 +71,18 @@ df = None
 
 if sheet_url:
     try:
-        gc = gspread.service_account(filename="/workspaces/AIMS-APP/practical-lodge-341703-f87bbdac7e18.json")
-        sh = gc.open_by_url(sheet_url)
-        worksheet_names = [ws.title for ws in sh.worksheets()]
+        # List worksheets for dropdown
+        creds = Credentials.from_service_account_info(
+            st.secrets["google_service_account"],
+            scopes=["https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive.file"]
+        )
+        gc_temp = gspread.authorize(creds)
+        sh_temp = gc_temp.open_by_url(sheet_url)
+        worksheet_names = [ws.title for ws in sh_temp.worksheets()]
         worksheet_name = st.sidebar.selectbox("📑 Choose a worksheet/tab", worksheet_names)
+
+        # Load selected worksheet
         df = load_sheet(sheet_url, worksheet_name)
         df = df.drop_duplicates()
         st.sidebar.success(f"✅ Loaded worksheet: {worksheet_name}")
@@ -84,13 +94,13 @@ if df is None or df.empty:
     st.stop()
 
 # ---------------------------
-# Filter options
+# Sidebar filters
 # ---------------------------
+st.sidebar.header("🔍 Filters")
 regions = sorted(df['REGION'].dropna().unique())
 industries = sorted(df['INDUSTRY'].dropna().unique())
 categories = sorted(df['CATEGORY'].dropna().unique())
 
-st.sidebar.header("🔍 Filters")
 selected_region = st.sidebar.selectbox("🌍 Select Region", options=["All"] + regions)
 selected_industry = st.sidebar.selectbox("🏭 Select Industry", options=["All"] + industries)
 selected_category = st.sidebar.selectbox("📂 Select Category", options=["All"] + categories)
@@ -129,31 +139,42 @@ if invalid_filter or filtered_df.empty:
 st.markdown(
     f"""
     <div style="padding:10px; border-radius:8px; background-color:#ffffff; border-left:6px solid #000000;">
-        <h3 style="color:black; text-align:left;">📊 Showing Results: Region: {selected_region} | Industry: {selected_industry} | Category: {selected_category}</h3>
+        <h3 style="color:black; text-align:left;">
+        📊 Showing Results: Region: {selected_region} | Industry: {selected_industry} | Category: {selected_category}
+        </h3>
     </div>
     """,
     unsafe_allow_html=True
 )
 
 # ---------------------------
-# Emojis/icons for rows
+# Emojis/icons mapping
 # ---------------------------
 region_icons = {"Africa": "🌍", "Europe": "🌎", "Asia": "🌏"}
 industry_icons = {"Oil & Gas": "🏭", "Agriculture": "🌾", "Technology": "💻"}
 category_icons = {"Labor": "👷", "Human Rights": "✊", "Safety": "🛡️"}
 
+# ---------------------------
+# Display filtered rows with emojis
+# ---------------------------
 for _, row in filtered_df.iterrows():
     region_icon = region_icons.get(row.get('REGION', ''), "🌐")
     industry_icon = industry_icons.get(row.get('INDUSTRY', ''), "🏢")
     category_icon = category_icons.get(row.get('CATEGORY', ''), "📂")
+    link_html = f"🌐 <a href='{row.get('link','')}' target='_blank'>Read More</a>" if row.get('link') else ""
 
     st.markdown(
         f"""
         <div style="padding:15px; border-radius:12px; background-color:#ffffff; margin-bottom:10px; border:1px solid #e0e0e0;">
             <strong>{region_icon} {industry_icon} {category_icon} {row.get('TITLE','Untitled')}</strong><br>
             {row.get('DESCRIPTION','')}<br>
-            {"🌐 <a href='" + row['link'] + "' target='_blank'>Read More</a>" if 'link' in row and row['link'] else ""}
-       
+            {link_html}
         """,
         unsafe_allow_html=True
     )
+
+# ---------------------------
+# Show filtered table
+# ---------------------------
+with st.expander("Show Filtered Table Data"):
+    st.dataframe(filtered_df, use_container_width=True)
