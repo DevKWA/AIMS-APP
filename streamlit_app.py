@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import gspread
@@ -49,7 +50,11 @@ st.image('assets/survivor_dashboard_banner.png', use_container_width=True)
 # ---------------------------
 @st.cache_data(ttl=600)
 def load_sheet(sheet_url, worksheet_name=None):
-    gc = gspread.service_account(filename="/workspaces/AIMS-APP/practical-lodge-341703-f87bbdac7e18.json")
+    service_account_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if not service_account_path:
+        st.error("❌ Environment variable GOOGLE_APPLICATION_CREDENTIALS not set!")
+        st.stop()
+    gc = gspread.service_account(filename=service_account_path)
     sh = gc.open_by_url(sheet_url)
     ws = sh.worksheet(worksheet_name) if worksheet_name else sh.sheet1
     data = ws.get_all_records()
