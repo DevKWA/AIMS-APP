@@ -18,7 +18,7 @@ requests-oauthlib==2.0.0
 
 # PyTorch & Transformers (CPU compatible)
 torch==2.2.0
-transformers==4.31.0
+transformers==4.30.2
 tokenizers==0.22.0
 
 
