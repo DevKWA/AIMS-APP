@@ -194,11 +194,14 @@ class StoryDataset(Dataset):
 # =========================================================
 with tab2:
     st.header("🤖 Insight on Supply Chains with AIMSDistill + Gemini")
-    st.info("Upload A Text File or Summarize Filtered Survivor Dashboard")
+    st.info("Upload a text file or summarize filtered Survivor Dashboard entries.")
 
-    # Configure Gemini via genai.Client
-    api_key = st.secrets["genai"]["api_key"]
-    client = genai.Client(api_key=api_key)
+    # ---------------------------
+    # Configure Gemini
+    # ---------------------------
+    import google.generativeai as genai
+    genai.configure(api_key=st.secrets["genai"]["api_key"])
+    g_model = genai.GenerativeModel("gemini-2.5-flash")
 
     summarize_choice = st.radio(
         "Choose source to summarize:",
@@ -222,17 +225,18 @@ with tab2:
                     text = re.sub(r'([.!?])\s+', r'\1<stop>', text)
                     sentences = [s.replace('<prd>', '.').strip() for s in text.split('<stop>') if s.strip()]
 
-                    # Predict risk sentences using AIMSDistill
+                    # Predict risk sentences with AIMSDistill
                     dataset = StoryDataset(sentences, tokenizer, max_length=60)
                     dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
                     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                     model.eval()
+
                     risk_sentences = []
                     with torch.no_grad():
                         for batch in dataloader:
                             input_ids, attention_mask = [b.to(device) for b in batch]
                             logits = model(input_ids=input_ids, attention_mask=attention_mask)
-                            preds = (logits[:,6] > 0.9).cpu().numpy()  # c3 = risk description
+                            preds = (logits[:, 6] > 0.9).cpu().numpy()  # c3 = risk description
                             for i, pred in enumerate(preds):
                                 if pred == 1:
                                     risk_sentences.append(sentences.pop(0))
@@ -259,10 +263,7 @@ Do not use poetic or figurative language.
 Sentences:
 {chr(10).join(chunk)}
 """
-                        response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=prompt
-                        )
+                        response = g_model.generate_content(prompt)
                         chunk_summaries.append(response.text)
 
                     # Merge summaries
@@ -274,11 +275,7 @@ Do not be poetic; emphasise repeated risks.
 Summaries:
 {chr(10).join(chunk_summaries)}
 """
-                    final_summary_response = client.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=final_prompt
-                    )
-                    final_summary = final_summary_response.text
+                    final_summary = g_model.generate_content(final_prompt).text
                     st.success("✅ Summary generated from uploaded file!")
                     st.text_area("📄 Summary", value=final_summary, height=400)
 
@@ -292,11 +289,11 @@ Summaries:
         if 'filtered_df' in locals() and not filtered_df.empty:
             if st.button("Generate AIMS Distill Summary From Survivor Dashboard"):
                 st.info("Processing Filtered Survivor Dashboard Entries...")
-
                 try:
                     # Combine filtered entries internally, DO NOT display
                     combined_text = "\n\n".join(
-                        f"{row.get('TITLE','')} - {row.get('DESCRIPTION','')} {'[Link]('+row.get('LINK','')+')' if row.get('LINK') else ''}"
+                        f"{row.get('TITLE','')} - {row.get('DESCRIPTION','')} "
+                        f"{'[Link]('+row.get('LINK','')+')' if row.get('LINK') else ''}"
                         for _, row in filtered_df.iterrows()
                     )
                     sentences = combined_text.split(". ")  # simple split
@@ -319,10 +316,7 @@ Do not use poetic or figurative language.
 Sentences:
 {chr(10).join(chunk)}
 """
-                        response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=prompt
-                        )
+                        response = g_model.generate_content(prompt)
                         chunk_summaries.append(response.text)
 
                     # Merge summaries
@@ -334,11 +328,7 @@ Do not be poetic; emphasise repeated risks.
 Summaries:
 {chr(10).join(chunk_summaries)}
 """
-                    final_summary_response = client.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=final_prompt
-                    )
-                    final_summary = final_summary_response.text
+                    final_summary = g_model.generate_content(final_prompt).text
                     st.success("✅ Summary Generated From Filtered Survivor Dashboard Entries!")
                     st.text_area("📄 Summary", value=final_summary, height=400)
 
