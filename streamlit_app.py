@@ -1,14 +1,15 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 import google.generativeai as genai
-from torch.utils.data import Dataset, DataLoader
-import torch
-import numpy as np
 import re
-from torch import nn
+import torch
+from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
+import torch.nn as nn
+import torch.nn.functional as F
 
 # ---------------------------
 # Streamlit page config
@@ -68,38 +69,36 @@ with tab1:
         st.stop()
 
     # ---------------------------
-    # Sidebar filters (drill-down)
+    # Sidebar filters
     # ---------------------------
-    st.sidebar.header("🔍 Filters")
-    filtered_for_filters = df.copy()
+    filtered_df = df.copy()
 
-    # Region filter
-    regions = sorted(filtered_for_filters['REGION'].dropna().unique()) if 'REGION' in df.columns else []
+    # Region
+    regions = sorted(filtered_df['REGION'].dropna().unique()) if 'REGION' in filtered_df.columns else []
     selected_region = st.sidebar.selectbox("🌍 Select Region", options=["All"] + regions)
     if selected_region != "All":
-        filtered_for_filters = filtered_for_filters[filtered_for_filters['REGION'] == selected_region]
+        filtered_df = filtered_df[filtered_df['REGION'] == selected_region]
 
-    # Industry filter
-    industries = sorted(filtered_for_filters['INDUSTRY'].dropna().unique()) if 'INDUSTRY' in filtered_for_filters.columns else []
+    # Industry
+    industries = sorted(filtered_df['INDUSTRY'].dropna().unique()) if 'INDUSTRY' in filtered_df.columns else []
     selected_industry = st.sidebar.selectbox("🏭 Select Industry", options=["All"] + industries)
     if selected_industry != "All":
-        filtered_for_filters = filtered_for_filters[filtered_for_filters['INDUSTRY'] == selected_industry]
+        filtered_df = filtered_df[filtered_df['INDUSTRY'] == selected_industry]
 
-    # Category filter
-    categories = sorted(filtered_for_filters['CATEGORY'].dropna().unique()) if 'CATEGORY' in filtered_for_filters.columns else []
+    # Category
+    categories = sorted(filtered_df['CATEGORY'].dropna().unique()) if 'CATEGORY' in filtered_df.columns else []
     selected_category = st.sidebar.selectbox("📂 Select Category", options=["All"] + categories)
     if selected_category != "All":
-        filtered_for_filters = filtered_for_filters[filtered_for_filters['CATEGORY'] == selected_category]
+        filtered_df = filtered_df[filtered_df['CATEGORY'] == selected_category]
 
-    # Title filter
-    titles = sorted(filtered_for_filters['TITLE'].dropna().unique()) if 'TITLE' in filtered_for_filters.columns else []
+    # Title
+    titles = sorted(filtered_df['TITLE'].dropna().unique()) if 'TITLE' in filtered_df.columns else []
     selected_title = st.sidebar.selectbox("📌 Select Title", options=["All"] + titles)
     if selected_title != "All":
-        filtered_for_filters = filtered_for_filters[filtered_for_filters['TITLE'] == selected_title]
+        filtered_df = filtered_df[filtered_df['TITLE'] == selected_title]
 
     # Link filter
     link_filter = st.sidebar.radio("🔗 Filter by Links", options=["All", "With Links", "Without Links"])
-    filtered_df = filtered_for_filters.copy()
     if link_filter == "With Links" and 'LINK' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['LINK'].notna() & (filtered_df['LINK'] != "")]
     elif link_filter == "Without Links" and 'LINK' in filtered_df.columns:
@@ -110,18 +109,7 @@ with tab1:
         st.stop()
 
     # ---------------------------
-    # Results header
-    # ---------------------------
-    st.markdown(f"""
-    <div style="padding:10px; border-radius:8px; background-color:#ffffff; border-left:6px solid #000000;">
-        <h3 style="color:black; text-align:left;">
-        📊 Showing Results: Region: {selected_region} | Industry: {selected_industry} | Category: {selected_category} | Title: {selected_title} | Links: {link_filter}
-        </h3>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ---------------------------
-    # Display rows with emojis
+    # Display results
     # ---------------------------
     region_icons = {"Africa": "🌍", "Europe": "🌎", "Asia": "🌏"}
     industry_icons = {"Oil & Gas": "🏭", "Agriculture": "🌾", "Technology": "💻"}
@@ -141,67 +129,15 @@ with tab1:
         """, unsafe_allow_html=True)
 
 # ---------------------------
-# TAB 2: AIMS LLM
+# TAB 2: AIMS Distill + Gemini
 # ---------------------------
-# ---------------------------
-# Initialize AIMSDistill model and tokenizer
-# ---------------------------
-model_name = "answerdotai/ModernBERT-large"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-class AimsDistillModel(nn.Module):
-    def __init__(self, tokenizer, model_name, dropout=0.0):
-        super().__init__()
-        self.bert = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-        self.dropout = nn.Dropout(p=dropout)
-        self.classifier = nn.Linear(self.bert.config.hidden_size, 11)
-
-    def forward(self, input_ids, attention_mask=None):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled_output = outputs.last_hidden_state[:, 0, :]
-        logits = self.dropout(self.classifier(pooled_output))
-        return logits
-
-model = AimsDistillModel(tokenizer, model_name).to(device)
-model.eval()
-
-# StoryDataset for AIMSDistill
-class StoryDataset(Dataset):
-    def __init__(self, texts, tokenizer, max_length):
-        self.texts = texts
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self):
-        return len(self.texts)
-
-    def __getitem__(self, idx):
-        text = self.texts[idx]
-        inputs = self.tokenizer(
-            text, return_tensors="pt", padding="max_length",
-            truncation=True, max_length=self.max_length
-        )
-        input_ids = inputs["input_ids"].squeeze(0)
-        attention_mask = inputs["attention_mask"].squeeze(0)
-        return input_ids, attention_mask
-
-# ---------------------------
-# TAB 2 UI
-# ---------------------------
-# =========================================================
-# TAB 2: AIMS LLM
-# =========================================================
 with tab2:
     st.header("🤖 Insight on Supply Chains with AIMSDistill + Gemini")
-    st.info("Upload a text file or summarize filtered Survivor Dashboard entries.")
+    st.info("Upload a Text File or Summarize Filtered Survivor Dashboard")
 
-    # ---------------------------
-    # Configure Gemini
-    # ---------------------------
-    import google.generativeai as genai
-    genai.configure(api_key=st.secrets["genai"]["api_key"])
-    g_model = genai.GenerativeModel("gemini-2.5-flash")
+    # Configure Gemini client
+    api_key = st.secrets["genai"]["api_key"]
+    client = genai.Client(api_key=api_key)
 
     summarize_choice = st.radio(
         "Choose source to summarize:",
@@ -209,7 +145,48 @@ with tab2:
     )
 
     # ---------------------------
-    # Option 1: Uploaded file
+    # AIMSDistill model definition
+    # ---------------------------
+    class AimsDistillModel(nn.Module):
+        def __init__(self, model_name="answerdotai/ModernBERT-large", dropout=0.0):
+            super().__init__()
+            self.bert = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+            self.dropout = nn.Dropout(p=dropout)
+            self.classifier = nn.Linear(self.bert.config.hidden_size, 11)
+
+        def forward(self, input_ids, attention_mask=None):
+            outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+            pooled_output = outputs.last_hidden_state[:, 0, :]
+            logits = self.dropout(self.classifier(pooled_output))
+            return logits
+
+    # Tokenizer + model (CPU)
+    tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-large")
+    device = torch.device("cpu")
+    model = AimsDistillModel().to(device)
+    model.eval()  # Set to eval mode
+
+    # ---------------------------
+    # Dataset for AIMSDistill
+    # ---------------------------
+    class StoryDataset(Dataset):
+        def __init__(self, texts, tokenizer, max_length=60):
+            self.texts = texts
+            self.tokenizer = tokenizer
+            self.max_length = max_length
+
+        def __len__(self):
+            return len(self.texts)
+
+        def __getitem__(self, idx):
+            text = self.texts[idx]
+            inputs = self.tokenizer(
+                text, return_tensors="pt", padding='max_length', truncation=True, max_length=self.max_length
+            )
+            return inputs['input_ids'].squeeze(0), inputs['attention_mask'].squeeze(0)
+
+    # ---------------------------
+    # Option 1: Upload Text File
     # ---------------------------
     if summarize_choice == "Upload Text File":
         uploaded_file = st.file_uploader("Upload a text file", type=["txt"])
@@ -225,18 +202,15 @@ with tab2:
                     text = re.sub(r'([.!?])\s+', r'\1<stop>', text)
                     sentences = [s.replace('<prd>', '.').strip() for s in text.split('<stop>') if s.strip()]
 
-                    # Predict risk sentences with AIMSDistill
-                    dataset = StoryDataset(sentences, tokenizer, max_length=60)
+                    # Predict risk sentences
+                    dataset = StoryDataset(sentences, tokenizer)
                     dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
-                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                    model.eval()
-
                     risk_sentences = []
                     with torch.no_grad():
                         for batch in dataloader:
                             input_ids, attention_mask = [b.to(device) for b in batch]
                             logits = model(input_ids=input_ids, attention_mask=attention_mask)
-                            preds = (logits[:, 6] > 0.9).cpu().numpy()  # c3 = risk description
+                            preds = (logits[:,6] > 0.9).cpu().numpy()  # c3 = risk description
                             for i, pred in enumerate(preds):
                                 if pred == 1:
                                     risk_sentences.append(sentences.pop(0))
@@ -245,15 +219,14 @@ with tab2:
                         st.warning("No risk description sentences detected.")
                         st.stop()
 
-                    # Chunk sentences
+                    # Chunking and summarization
                     def chunk_sentences(sent_list, chunk_size=80):
                         for i in range(0, len(sent_list), chunk_size):
                             yield sent_list[i:i+chunk_size]
 
                     chunks = list(chunk_sentences(risk_sentences))
-
-                    # Summarize each chunk with Gemini
                     chunk_summaries = []
+
                     for chunk in chunks:
                         prompt = f"""
 You are given a collection of sentences classified as "risk descriptions".
@@ -263,7 +236,10 @@ Do not use poetic or figurative language.
 Sentences:
 {chr(10).join(chunk)}
 """
-                        response = g_model.generate_content(prompt)
+                        response = client.models.generate_content(
+                            model="gemini-2.5-flash",
+                            contents=prompt
+                        )
                         chunk_summaries.append(response.text)
 
                     # Merge summaries
@@ -275,7 +251,11 @@ Do not be poetic; emphasise repeated risks.
 Summaries:
 {chr(10).join(chunk_summaries)}
 """
-                    final_summary = g_model.generate_content(final_prompt).text
+                    final_summary_response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=final_prompt
+                    )
+                    final_summary = final_summary_response.text
                     st.success("✅ Summary generated from uploaded file!")
                     st.text_area("📄 Summary", value=final_summary, height=400)
 
@@ -283,30 +263,26 @@ Summaries:
                     st.error(f"❌ Error processing uploaded file: {e}")
 
     # ---------------------------
-    # Option 2: Filtered Tab 1 entries
+    # Option 2: Filtered Survivor Dashboard Entries
     # ---------------------------
     elif summarize_choice == "Filtered Survivor Dashboard Entries":
         if 'filtered_df' in locals() and not filtered_df.empty:
             if st.button("Generate AIMS Distill Summary From Survivor Dashboard"):
                 st.info("Processing Filtered Survivor Dashboard Entries...")
                 try:
-                    # Combine filtered entries internally, DO NOT display
                     combined_text = "\n\n".join(
-                        f"{row.get('TITLE','')} - {row.get('DESCRIPTION','')} "
-                        f"{'[Link]('+row.get('LINK','')+')' if row.get('LINK') else ''}"
+                        f"{row.get('TITLE','')} - {row.get('DESCRIPTION','')} {'[Link]('+row.get('LINK','')+')' if row.get('LINK') else ''}"
                         for _, row in filtered_df.iterrows()
                     )
-                    sentences = combined_text.split(". ")  # simple split
+                    sentences = combined_text.split(". ")
 
-                    # Chunk sentences
                     def chunk_sentences(sent_list, chunk_size=80):
                         for i in range(0, len(sent_list), chunk_size):
                             yield sent_list[i:i+chunk_size]
 
                     chunks = list(chunk_sentences(sentences))
-
-                    # Summarize each chunk
                     chunk_summaries = []
+
                     for chunk in chunks:
                         prompt = f"""
 You are given a collection of sentences classified as "risk descriptions".
@@ -316,10 +292,12 @@ Do not use poetic or figurative language.
 Sentences:
 {chr(10).join(chunk)}
 """
-                        response = g_model.generate_content(prompt)
+                        response = client.models.generate_content(
+                            model="gemini-2.5-flash",
+                            contents=prompt
+                        )
                         chunk_summaries.append(response.text)
 
-                    # Merge summaries
                     final_prompt = f"""
 You are given multiple summaries of batches of sentences.
 Merge them into one coherent, factual summary.
@@ -328,7 +306,11 @@ Do not be poetic; emphasise repeated risks.
 Summaries:
 {chr(10).join(chunk_summaries)}
 """
-                    final_summary = g_model.generate_content(final_prompt).text
+                    final_summary_response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=final_prompt
+                    )
+                    final_summary = final_summary_response.text
                     st.success("✅ Summary Generated From Filtered Survivor Dashboard Entries!")
                     st.text_area("📄 Summary", value=final_summary, height=400)
 
