@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from google import genai
+import google.generativeai as genai
 from torch.utils.data import Dataset, DataLoader
 import torch
 import numpy as np
