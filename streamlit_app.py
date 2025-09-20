@@ -8,7 +8,7 @@ import torch
 import numpy as np
 import re
 from torch import nn
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, AutoModelForMaskedLM
 
 # ---------------------------
 # Streamlit page config
@@ -148,6 +148,7 @@ with tab1:
 # ---------------------------
 model_name = "bert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class AimsDistillModel(nn.Module):
@@ -192,6 +193,13 @@ class StoryDataset(Dataset):
 # =========================================================
 # TAB 2: AIMS LLM
 # =========================================================
+# ---------------------------
+# TAB 2: AIMS LLM with ModernBERT
+# ---------------------------
+
+# ---------------------------
+# TAB 2: AIMS LLM
+# ---------------------------
 with tab2:
     st.header("🤖 Insight on Supply Chains with AIMSDistill + Gemini")
     st.info("Upload a text file or summarize filtered Survivor Dashboard entries.")
@@ -207,6 +215,53 @@ with tab2:
         "Choose source to summarize:",
         ["Upload Text File", "Filtered Survivor Dashboard Entries"]
     )
+
+    # ---------------------------
+    # Initialize AIMSDistill model & tokenizer
+    # ---------------------------
+    from transformers import AutoTokenizer, AutoModelForMaskedLM
+
+    model_name = "bert-base-uncased"
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    class AimsDistillModel(nn.Module):
+        def __init__(self, tokenizer, model_name, dropout=0.0):
+            super().__init__()
+            self.bert = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True)
+            self.dropout = nn.Dropout(p=dropout)
+            self.classifier = nn.Linear(self.bert.config.hidden_size, 11)
+
+        def forward(self, input_ids, attention_mask=None):
+            outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+            pooled_output = outputs.last_hidden_state[:, 0, :]
+            logits = self.dropout(self.classifier(pooled_output))
+            return logits
+
+    model = AimsDistillModel(tokenizer, model_name).to(device)
+    model.eval()
+
+    # ---------------------------
+    # StoryDataset for AIMSDistill
+    # ---------------------------
+    class StoryDataset(Dataset):
+        def __init__(self, texts, tokenizer, max_length):
+            self.texts = texts
+            self.tokenizer = tokenizer
+            self.max_length = max_length
+
+        def __len__(self):
+            return len(self.texts)
+
+        def __getitem__(self, idx):
+            text = self.texts[idx]
+            inputs = self.tokenizer(
+                text, return_tensors="pt", padding="max_length",
+                truncation=True, max_length=self.max_length
+            )
+            input_ids = inputs["input_ids"].squeeze(0)
+            attention_mask = inputs["attention_mask"].squeeze(0)
+            return input_ids, attention_mask
 
     # ---------------------------
     # Option 1: Uploaded file
@@ -228,9 +283,6 @@ with tab2:
                     # Predict risk sentences with AIMSDistill
                     dataset = StoryDataset(sentences, tokenizer, max_length=60)
                     dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
-                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                    model.eval()
-
                     risk_sentences = []
                     with torch.no_grad():
                         for batch in dataloader:
@@ -290,13 +342,12 @@ Summaries:
             if st.button("Generate AIMS Distill Summary From Survivor Dashboard"):
                 st.info("Processing Filtered Survivor Dashboard Entries...")
                 try:
-                    # Combine filtered entries internally, DO NOT display
                     combined_text = "\n\n".join(
                         f"{row.get('TITLE','')} - {row.get('DESCRIPTION','')} "
                         f"{'[Link]('+row.get('LINK','')+')' if row.get('LINK') else ''}"
                         for _, row in filtered_df.iterrows()
                     )
-                    sentences = combined_text.split(". ")  # simple split
+                    sentences = combined_text.split(". ")
 
                     # Chunk sentences
                     def chunk_sentences(sent_list, chunk_size=80):
