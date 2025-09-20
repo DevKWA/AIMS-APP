@@ -146,7 +146,7 @@ with tab1:
 # ---------------------------
 # Initialize AIMSDistill model and tokenizer
 # ---------------------------
-model_name = "answerdotai/ModernBERT-large"
+model_name = "bert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
