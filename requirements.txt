@@ -18,6 +18,9 @@ requests-oauthlib==2.0.0
 
 # PyTorch & Transformers (CPU compatible)
 torch==2.2.0
+transformers==4.34.0
+tokenizers==0.22.0
+
 
 # Google API & Sheets
 google-auth==2.40.3
