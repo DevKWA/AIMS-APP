@@ -43,8 +43,8 @@ html, body, [class*="css"] { color: black !important; }
 # ---------------------------
 # Banner images
 # ---------------------------
-st.image('assets/AULA_HORIZONTAL_GREEN_BANNER.png', use_container_width=True)
-st.image('assets/survivor_dashboard_banner.png', use_container_width=True)
+st.image('assets/AULA_HORIZONTAL_GREEN_BANNER.png', width='stretch')
+st.image('assets/survivor_dashboard_banner.png', width='stretch')
 
 # ---------------------------
 # Tabs
