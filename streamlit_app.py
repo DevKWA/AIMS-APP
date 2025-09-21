@@ -1,3 +1,4 @@
+import io
 import streamlit as st
 import pandas as pd
 import gspread
@@ -13,6 +14,18 @@ from transformers import AutoTokenizer, AutoModel, AutoModelForMaskedLM
 # ---------------------------
 # Streamlit page config
 # ---------------------------
+st.warning(
+"""
+⚠️ **Content Warning:** This dashboard contains real survivor stories of modern slavery and human trafficking. Some descriptions may be distressing.
+
+All stories are from open, public, approved sources.
+Each story includes a link to the full source. Please consult the original source.
+
+Please use this tool responsibly, with respect and sensitivity toward survivors. Younger audiences, survivors, or those who may be triggered by descriptions of violence, exploitation, or abuse should proceed with caution.
+
+These stories are shared for educational and awareness purposes only and should be engaged with thoughtfully, keeping in mind the dignity and resilience of survivors.
+"""
+)
 st.set_page_config(layout="wide", page_title="Survivor Dashboard + AIMS LLM")
 
 # ---------------------------
@@ -36,12 +49,12 @@ st.image('assets/survivor_dashboard_banner.png', use_container_width=True)
 # ---------------------------
 # Tabs
 # ---------------------------
-tab1, tab2 = st.tabs(["📊 Survivor Dashboard", "🤖 Insight on Supply Chains (from AIMS)"])
+tab1, tab2, tab3 = st.tabs(["📖 Dashboard Documentation & Instructions", "📊 Survivor Dashboard", "🤖 Insight on Supply Chains (from AIMS)"])
 
 # ---------------------------
 # TAB 1: Survivor Dashboard
 # ---------------------------
-with tab1:
+with tab2:
     st.sidebar.header("Data Source Options")
     sheet_url = st.sidebar.text_input("📄 Google Sheet URL (public or private)")
 
@@ -200,7 +213,7 @@ class StoryDataset(Dataset):
 # ---------------------------
 # TAB 2: AIMS LLM
 # ---------------------------
-with tab2:
+with tab3:
     st.header("🤖 Insight on Supply Chains with AIMSDistill + Gemini")
     st.info("Upload a text file or summarize filtered Survivor Dashboard entries.")
 
@@ -387,3 +400,73 @@ Summaries:
                     st.error(f"❌ Error processing Filtered Tab 1 Entries: {e}")
         else:
             st.warning("No Filtered Tab 1 Entries Available To Summarize.")
+
+with tab1:
+    st.header("📖 Dashboard Documentation & Instructions")
+
+    doc_text = """
+    # Survivor Dashboard + AIMS LLM Documentation
+
+    ## Overview
+    This dashboard allows users to explore survivor stories of modern slavery and human trafficking,
+    and generate summarized insights using AIMSDistill + Gemini.
+
+    ## Features
+    - Filter stories by Region, Industry, Category, Title, or Links.
+    - Generate AI-assisted summaries of filtered content.
+    - Access educational content responsibly.
+
+    ## User Instructions
+    - Enter a Google Sheet URL (public or private) in the sidebar to load stories.
+    - Use filters to narrow down data.
+    - Click the "Generate Summary" button to see AI insights.
+    - Review sources responsibly via the included links.
+
+    ## Warnings
+    - Content is sensitive. Some stories may be distressing.
+    - Intended for educational and awareness purposes only.
+
+    ## API / Model Details
+    - Uses `bert-base-uncased` for AIMSDistill predictions.
+    - Summarization powered by Gemini 2.5 via `google.generativeai`.
+    - Ensure API keys are stored securely in Streamlit secrets.
+
+    ## Additional Resources
+    - [Streamlit Documentation](https://docs.streamlit.io/)
+    - [Transformers Documentation](https://huggingface.co/docs/transformers/)
+    - [Google Generative AI Documentation](https://developers.generativeai.google/)
+    """
+
+    st.markdown(doc_text)
+
+    # Create a downloadable Markdown file
+    markdown_bytes = doc_text.encode('utf-8')
+    st.download_button(
+        label="📥 Download Documentation (Markdown)",
+        data=markdown_bytes,
+        file_name="Survivor_Dashboard_Documentation.md",
+        mime="text/markdown"
+    )
+
+    # Optional: Download as PDF
+    try:
+        from fpdf import FPDF
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(0, 10, "This is the documentation for the dashboard...")
+        
+
+        # Save PDF to BytesIO
+        pdf_bytes = pdf.output(dest="S").encode("latin1")  # dest="S" returns as string, encode to bytes
+
+        st.download_button(
+            label="📥 Download Documentation (PDF)",
+            data=pdf_bytes,
+            file_name="Survivor_Dashboard_Documentation.pdf",
+            mime="application/pdf"
+        )
+    except ImportError:
+        st.warning("Install `fpdf` to enable PDF download: pip install fpdf")
