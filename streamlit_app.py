@@ -334,7 +334,6 @@ with tab3:
 with tab1:
     st.header("📖 Dashboard Documentation & Instructions")
     doc_text = """
-    # Survivor Dashboard + AIMS LLM Documentation
 # Survivor Dashboard + AIMS LLM Documentation
 
 ## Overview
