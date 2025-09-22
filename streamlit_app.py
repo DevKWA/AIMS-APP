@@ -52,6 +52,105 @@ st.image('assets/survivor_dashboard_banner.png', width='stretch')
 tab1, tab2, tab3 = st.tabs(["📖 Dashboard Documentation & Instructions", "📊 Survivor Dashboard", "🤖 Insight on Supply Chains (from AIMS)"])
 
 # ---------------------------
+# Cached functions for performance
+# ---------------------------
+@st.cache_resource
+def load_tokenizer_and_model(model_name="bert-base-uncased"):
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True)
+    return tokenizer, model
+
+@st.cache_resource
+def load_aims_model(_tokenizer, model_name="bert-base-uncased", dropout=0.0):
+    class AimsDistillModel(nn.Module):
+        def __init__(self, tokenizer, model_name, dropout=0.0):
+            super().__init__()
+            self.bert = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+            self.dropout = nn.Dropout(p=dropout)
+            self.classifier = nn.Linear(self.bert.config.hidden_size, 11)
+
+        def forward(self, input_ids, attention_mask=None):
+            outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+            pooled_output = outputs.last_hidden_state[:, 0, :]
+            logits = self.dropout(self.classifier(pooled_output))
+            return logits
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = AimsDistillModel(tokenizer, model_name, dropout=dropout).to(device)
+    model.eval()
+    return model, device
+
+@st.cache_data
+def load_google_sheet(sheet_url, _creds):
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_url(sheet_url)
+    worksheets = {ws.title: pd.DataFrame(ws.get_all_records()) for ws in sh.worksheets()}
+    return worksheets
+
+@st.cache_data
+def preprocess_text(text_data: str):
+    abbrev = r'(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|U\.S\.A|i\.e|e\.g|St|a\.m|p\.m|Fig|No)\.'
+    text = re.sub(abbrev, lambda x: x.group().replace('.', '<prd>'), text_data)
+    text = re.sub(r'(\d)\.(\d)', r'\1<prd>\2', text)
+    text = re.sub(r'([.!?])\s+', r'\1<stop>', text)
+    sentences = [s.replace('<prd>', '.').strip() for s in text.split('<stop>') if s.strip()]
+    return sentences
+
+@st.cache_data
+def make_dataloader(sentences, tokenizer, max_length=60, batch_size=32):
+    class StoryDataset(Dataset):
+        def __init__(self, texts, tokenizer, max_length):
+            self.texts = texts
+            self.tokenizer = tokenizer
+            self.max_length = max_length
+
+        def __len__(self):
+            return len(self.texts)
+
+        def __getitem__(self, idx):
+            text = self.texts[idx]
+            inputs = self.tokenizer(
+                text, return_tensors="pt", padding="max_length",
+                truncation=True, max_length=self.max_length
+            )
+            input_ids = inputs["input_ids"].squeeze(0)
+            attention_mask = inputs["attention_mask"].squeeze(0)
+            return input_ids, attention_mask
+
+    dataset = StoryDataset(sentences, tokenizer, max_length)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+@st.cache_data
+def chunk_sentences(sent_list, chunk_size=80):
+    return [sent_list[i:i+chunk_size] for i in range(0, len(sent_list), chunk_size)]
+
+@st.cache_data
+def summarize_chunk(chunk, _g_model):
+    prompt = f"""
+You are given a collection of sentences classified as "risk descriptions".
+Summarize them clearly, concisely, and factually in Canadian English.
+Do not use poetic or figurative language.
+
+Sentences:
+{chr(10).join(chunk)}
+"""
+    response = g_model.generate_content(prompt)
+    return response.text
+
+@st.cache_data
+def merge_summaries(chunk_summaries, _g_model):
+    final_prompt = f"""
+You are given multiple summaries of batches of sentences.
+Merge them into one coherent, factual summary.
+Do not be poetic; emphasise repeated risks.
+
+Summaries:
+{chr(10).join(chunk_summaries)}
+"""
+    final_summary = g_model.generate_content(final_prompt).text
+    return final_summary
+
+# ---------------------------
 # TAB 1: Survivor Dashboard
 # ---------------------------
 with tab2:
@@ -66,12 +165,10 @@ with tab2:
             creds = Credentials.from_service_account_info(
                 st.secrets["google_service_account"], scopes=SCOPES
             )
-            gc = gspread.authorize(creds)
-            sh = gc.open_by_url(sheet_url)
-            worksheet_names = [ws.title for ws in sh.worksheets()]
+            worksheets = load_google_sheet(sheet_url, creds)
+            worksheet_names = list(worksheets.keys())
             worksheet_name = st.sidebar.selectbox("📑 Choose a worksheet/tab", worksheet_names)
-            ws = sh.worksheet(worksheet_name)
-            df = pd.DataFrame(ws.get_all_records())
+            df = worksheets[worksheet_name]
             st.sidebar.success(f"✅ Loaded worksheet: {worksheet_name}")
         except Exception as ex:
             st.sidebar.error(f"❌ Error loading sheet: {ex}")
@@ -154,73 +251,12 @@ with tab2:
         """, unsafe_allow_html=True)
 
 # ---------------------------
-# TAB 2: AIMS LLM
-# ---------------------------
-# ---------------------------
-# Initialize AIMSDistill model and tokenizer
-# ---------------------------
-model_name = "bert-base-uncased"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-class AimsDistillModel(nn.Module):
-    def __init__(self, tokenizer, model_name, dropout=0.0):
-        super().__init__()
-        self.bert = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-        self.dropout = nn.Dropout(p=dropout)
-        self.classifier = nn.Linear(self.bert.config.hidden_size, 11)
-
-    def forward(self, input_ids, attention_mask=None):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled_output = outputs.last_hidden_state[:, 0, :]
-        logits = self.dropout(self.classifier(pooled_output))
-        return logits
-
-model = AimsDistillModel(tokenizer, model_name).to(device)
-model.eval()
-
-# StoryDataset for AIMSDistill
-class StoryDataset(Dataset):
-    def __init__(self, texts, tokenizer, max_length):
-        self.texts = texts
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self):
-        return len(self.texts)
-
-    def __getitem__(self, idx):
-        text = self.texts[idx]
-        inputs = self.tokenizer(
-            text, return_tensors="pt", padding="max_length",
-            truncation=True, max_length=self.max_length
-        )
-        input_ids = inputs["input_ids"].squeeze(0)
-        attention_mask = inputs["attention_mask"].squeeze(0)
-        return input_ids, attention_mask
-
-# ---------------------------
-# TAB 2 UI
-# ---------------------------
-# =========================================================
-# TAB 2: AIMS LLM
-# =========================================================
-# ---------------------------
-# TAB 2: AIMS LLM with ModernBERT
-# ---------------------------
-
-# ---------------------------
-# TAB 2: AIMS LLM
+# TAB 2 + TAB 3: AIMSDistill + Gemini
 # ---------------------------
 with tab3:
     st.header("🤖 Insight on Supply Chains with AIMSDistill + Gemini")
     st.info("Upload a text file or summarize filtered Survivor Dashboard entries.")
 
-    # ---------------------------
-    # Configure Gemini
-    # ---------------------------
-    import google.generativeai as genai
     genai.configure(api_key=st.secrets["genai"]["api_key"])
     g_model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -229,52 +265,8 @@ with tab3:
         ["Upload Text File", "Filtered Survivor Dashboard Entries"]
     )
 
-    # ---------------------------
-    # Initialize AIMSDistill model & tokenizer
-    # ---------------------------
-    from transformers import AutoTokenizer, AutoModelForMaskedLM
-
-    model_name = "bert-base-uncased"
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    class AimsDistillModel(nn.Module):
-        def __init__(self, tokenizer, model_name, dropout=0.0):
-            super().__init__()
-            self.bert = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True)
-            self.dropout = nn.Dropout(p=dropout)
-            self.classifier = nn.Linear(self.bert.config.hidden_size, 11)
-
-        def forward(self, input_ids, attention_mask=None):
-            outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-            pooled_output = outputs.last_hidden_state[:, 0, :]
-            logits = self.dropout(self.classifier(pooled_output))
-            return logits
-
-    model = AimsDistillModel(tokenizer, model_name).to(device)
-    model.eval()
-
-    # ---------------------------
-    # StoryDataset for AIMSDistill
-    # ---------------------------
-    class StoryDataset(Dataset):
-        def __init__(self, texts, tokenizer, max_length):
-            self.texts = texts
-            self.tokenizer = tokenizer
-            self.max_length = max_length
-
-        def __len__(self):
-            return len(self.texts)
-
-        def __getitem__(self, idx):
-            text = self.texts[idx]
-            inputs = self.tokenizer(
-                text, return_tensors="pt", padding="max_length",
-                truncation=True, max_length=self.max_length
-            )
-            input_ids = inputs["input_ids"].squeeze(0)
-            attention_mask = inputs["attention_mask"].squeeze(0)
-            return input_ids, attention_mask
+    tokenizer, _ = load_tokenizer_and_model()
+    model, device = load_aims_model(tokenizer)
 
     # ---------------------------
     # Option 1: Uploaded file
@@ -286,22 +278,15 @@ with tab3:
             if st.button("Generate AIMSDistill Summary from File"):
                 st.info("Processing uploaded file...")
                 try:
-                    # Sentence segmentation
-                    abbrev = r'(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|U\.S\.A|i\.e|e\.g|St|a\.m|p\.m|Fig|No)\.'
-                    text = re.sub(abbrev, lambda x: x.group().replace('.', '<prd>'), text_data)
-                    text = re.sub(r'(\d)\.(\d)', r'\1<prd>\2', text)
-                    text = re.sub(r'([.!?])\s+', r'\1<stop>', text)
-                    sentences = [s.replace('<prd>', '.').strip() for s in text.split('<stop>') if s.strip()]
-
-                    # Predict risk sentences with AIMSDistill
-                    dataset = StoryDataset(sentences, tokenizer, max_length=60)
-                    dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
+                    sentences = preprocess_text(text_data)
+                    dataloader = make_dataloader(sentences, tokenizer)
                     risk_sentences = []
+
                     with torch.no_grad():
                         for batch in dataloader:
                             input_ids, attention_mask = [b.to(device) for b in batch]
                             logits = model(input_ids=input_ids, attention_mask=attention_mask)
-                            preds = (logits[:, 6] > 0.9).cpu().numpy()  # c3 = risk description
+                            preds = (logits[:, 6] > 0.9).cpu().numpy()
                             for i, pred in enumerate(preds):
                                 if pred == 1:
                                     risk_sentences.append(sentences.pop(0))
@@ -310,40 +295,12 @@ with tab3:
                         st.warning("No risk description sentences detected.")
                         st.stop()
 
-                    # Chunk sentences
-                    def chunk_sentences(sent_list, chunk_size=80):
-                        for i in range(0, len(sent_list), chunk_size):
-                            yield sent_list[i:i+chunk_size]
+                    chunks = chunk_sentences(risk_sentences)
+                    chunk_summaries = [summarize_chunk(chunk, g_model) for chunk in chunks]
+                    final_summary = merge_summaries(chunk_summaries, g_model)
 
-                    chunks = list(chunk_sentences(risk_sentences))
-
-                    # Summarize each chunk with Gemini
-                    chunk_summaries = []
-                    for chunk in chunks:
-                        prompt = f"""
-You are given a collection of sentences classified as "risk descriptions".
-Summarize them clearly, concisely, and factually in Canadian English.
-Do not use poetic or figurative language.
-
-Sentences:
-{chr(10).join(chunk)}
-"""
-                        response = g_model.generate_content(prompt)
-                        chunk_summaries.append(response.text)
-
-                    # Merge summaries
-                    final_prompt = f"""
-You are given multiple summaries of batches of sentences.
-Merge them into one coherent, factual summary.
-Do not be poetic; emphasise repeated risks.
-
-Summaries:
-{chr(10).join(chunk_summaries)}
-"""
-                    final_summary = g_model.generate_content(final_prompt).text
                     st.success("✅ Summary generated from uploaded file!")
                     st.text_area("📄 Summary", value=final_summary, height=400)
-
                 except Exception as e:
                     st.error(f"❌ Error processing uploaded file: {e}")
 
@@ -360,108 +317,153 @@ Summaries:
                         f"{'[Link]('+row.get('LINK','')+')' if row.get('LINK') else ''}"
                         for _, row in filtered_df.iterrows()
                     )
-                    sentences = combined_text.split(". ")
-
-                    # Chunk sentences
-                    def chunk_sentences(sent_list, chunk_size=80):
-                        for i in range(0, len(sent_list), chunk_size):
-                            yield sent_list[i:i+chunk_size]
-
-                    chunks = list(chunk_sentences(sentences))
-
-                    # Summarize each chunk
-                    chunk_summaries = []
-                    for chunk in chunks:
-                        prompt = f"""
-You are given a collection of sentences classified as "risk descriptions".
-Summarize them clearly, concisely, and factually in Canadian English.
-Do not use poetic or figurative language.
-
-Sentences:
-{chr(10).join(chunk)}
-"""
-                        response = g_model.generate_content(prompt)
-                        chunk_summaries.append(response.text)
-
-                    # Merge summaries
-                    final_prompt = f"""
-You are given multiple summaries of batches of sentences.
-Merge them into one coherent, factual summary.
-Do not be poetic; emphasise repeated risks.
-
-Summaries:
-{chr(10).join(chunk_summaries)}
-"""
-                    final_summary = g_model.generate_content(final_prompt).text
+                    sentences = preprocess_text(combined_text)
+                    chunks = chunk_sentences(sentences)
+                    chunk_summaries = [summarize_chunk(chunk, g_model) for chunk in chunks]
+                    final_summary = merge_summaries(chunk_summaries, g_model)
                     st.success("✅ Summary Generated From Filtered Survivor Dashboard Entries!")
                     st.text_area("📄 Summary", value=final_summary, height=400)
-
                 except Exception as e:
                     st.error(f"❌ Error processing Filtered Tab 1 Entries: {e}")
         else:
             st.warning("No Filtered Tab 1 Entries Available To Summarize.")
 
+# ---------------------------
+# TAB 1: Documentation
+# ---------------------------
 with tab1:
     st.header("📖 Dashboard Documentation & Instructions")
-
     doc_text = """
     # Survivor Dashboard + AIMS LLM Documentation
+# Survivor Dashboard + AIMS LLM Documentation
 
-    ## Overview
-    This dashboard allows users to explore survivor stories of modern slavery and human trafficking,
-    and generate summarized insights using AIMSDistill + Gemini.
+## Overview
+The Survivor Dashboard is designed to help users explore survivor stories of modern slavery and human trafficking. 
+It allows filtering by multiple dimensions and generating AI-assisted summaries of risk-related content using **AIMSDistill** + **Gemini 2.5**.
 
-    ## Features
-    - Filter stories by Region, Industry, Category, Title, or Links.
-    - Generate AI-assisted summaries of filtered content.
-    - Access educational content responsibly.
+**Important Note:** Some stories contain sensitive content. Please read responsibly and ensure content is appropriate for your audience.
 
-    ## User Instructions
-    - Enter a Google Sheet URL (public or private) in the sidebar to load stories.
-    - Use filters to narrow down data.
-    - Click the "Generate Summary" button to see AI insights.
-    - Review sources responsibly via the included links.
+---
 
-    ## Warnings
-    - Content is sensitive. Some stories may be distressing.
-    - Intended for educational and awareness purposes only.
+## Dashboard Layout
 
-    ## API / Model Details
-    - Uses `bert-base-uncased` for AIMSDistill predictions.
-    - Summarization powered by Gemini 2.5 via `google.generativeai`.
-    - Ensure API keys are stored securely in Streamlit secrets.
+The dashboard has **three main tabs**:
 
-    ## Additional Resources
-    - [Streamlit Documentation](https://docs.streamlit.io/)
-    - [Transformers Documentation](https://huggingface.co/docs/transformers/)
-    - [Google Generative AI Documentation](https://developers.generativeai.google/)
+1. **📖 Dashboard Documentation & Instructions** – Provides this guide and allows downloading it.
+2. **📊 Survivor Dashboard** – Main interface for exploring survivor stories.
+3. **🤖 Insight on Supply Chains (from AIMS)** – Generate AI-assisted summaries from uploaded text files or filtered survivor stories.
+
+---
+
+## Step-by-Step Instructions
+
+### Step 1: Load Data
+1. Go to the **📊 Survivor Dashboard** tab.
+2. In the **sidebar**, enter a **Google Sheet URL** that contains the survivor stories.
+   - Sheets can be **public or private**. Private sheets require a service account credential stored in `st.secrets`.
+3. Once the sheet loads, select the desired worksheet/tab from the dropdown.
+
+### Step 2: Apply Filters
+Use the sidebar filters to drill down your data:
+
+- **Region:** Select a specific region (e.g., Africa, Europe, Asia) or choose “All”.
+- **Industry:** Select an industry (e.g., Oil & Gas, Agriculture, Technology) or choose “All”.
+- **Category:** Filter by categories like Labor, Human Rights, Safety.
+- **Title:** Select a specific story title or “All”.
+- **Links:** Filter stories by presence or absence of a link.
+
+> Filters are **cumulative**. Applying multiple filters will narrow the results further.
+
+### Step 3: Review Results
+- Filtered results appear as **cards** with emojis representing Region, Industry, and Category.
+- Each card displays:
+  - **Title**
+  - **Description**
+  - **Link** (if available)
+- Scroll through the results to review stories.
+
+### Step 4: Generate AI Summaries
+Go to the **🤖 Insight on Supply Chains (from AIMS)** tab.
+
+You have **two options**:
+
+#### Option 1: Upload Text File
+1. Upload a `.txt` file containing text you want to summarize.
+2. Click **“Generate AIMSDistill Summary from File”**.
+3. The system will:
+   - Split text into sentences.
+   - Detect sentences classified as **risk descriptions**.
+   - Chunk them for processing.
+   - Summarize each chunk using Gemini 2.5.
+   - Merge summaries into a **final coherent summary**.
+4. The summary will appear in a text area for review.
+
+#### Option 2: Summarize Filtered Survivor Dashboard Entries
+1. Make sure you have applied filters in the **Survivor Dashboard**.
+2. Click **“Generate AIMS Distill Summary From Survivor Dashboard”**.
+3. The system will:
+   - Combine filtered story titles and descriptions.
+   - Detect risk sentences and summarize them in chunks.
+   - Merge all chunk summaries into a final summary.
+4. Review the summary in the provided text area.
+
+> Summaries are generated in **clear, factual Canadian English** without poetic or figurative language.
+
+---
+
+## Download Documentation
+- Go to the **📖 Dashboard Documentation & Instructions** tab.
+- Download as:
+  - **Markdown:** Click "📥 Download Documentation (Markdown)"
+  - **PDF:** Click "📥 Download Documentation (PDF)" (requires `fpdf` package)
+
+---
+
+## Warnings & Guidelines
+- **Sensitive Content:** This dashboard contains real stories that may be distressing.
+- **Educational Use Only:** Content is for awareness, research, and educational purposes.
+- **Respect Privacy:** Do not use stories inappropriately or share personal survivor data.
+
+---
+
+## Tips for Efficient Use
+1. Use **filters** to narrow down data before generating summaries.
+2. For large sheets, caching speeds up repeated filtering and summarization.
+3. Uploaded text files should be in **plain text (.txt) format**.
+4. Keep Google Sheets organized with consistent column names:
+   - `REGION`, `INDUSTRY`, `CATEGORY`, `TITLE`, `DESCRIPTION`, `LINK`.
+
+---
+
+## Technical Notes
+- **AIMSDistill:** BERT-based model detects risk-related sentences.
+- **Gemini 2.5:** Provides concise, factual summarization.
+- **Caching:** Repeated operations like loading sheets, models, and text processing are cached for memory efficiency.
+
+---
+
+## Additional Resources
+- [Streamlit Documentation](https://docs.streamlit.io/)
+- [Transformers Documentation](https://huggingface.co/docs/transformers/)
+- [Google Generative AI Documentation](https://developers.generativeai.google/)
     """
 
     st.markdown(doc_text)
-
-    # Create a downloadable Markdown file
-    markdown_bytes = doc_text.encode('utf-8')
     st.download_button(
         label="📥 Download Documentation (Markdown)",
-        data=markdown_bytes,
+        data=doc_text.encode('utf-8'),
         file_name="Survivor_Dashboard_Documentation.md",
         mime="text/markdown"
     )
 
-    # Optional: Download as PDF
     try:
         from fpdf import FPDF
-
         pdf = FPDF()
         pdf.add_page()
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.set_font("Arial", size=12)
         pdf.multi_cell(0, 10, "This is the documentation for the dashboard...")
-        
-
-        # Save PDF to BytesIO
-        pdf_bytes = pdf.output(dest="S").encode("latin1")  # dest="S" returns as string, encode to bytes
-
+        pdf_bytes = pdf.output(dest="S").encode("latin1")
         st.download_button(
             label="📥 Download Documentation (PDF)",
             data=pdf_bytes,
