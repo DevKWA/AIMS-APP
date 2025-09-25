@@ -155,7 +155,9 @@ Summaries:
 # ---------------------------
 with tab2:
     st.sidebar.header("Data Source Options")
-    sheet_url = st.sidebar.text_input("📄 Google Sheet URL (public or private)")
+    # Preloaded default Google Sheet URL
+    DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1zDp2_x2U631K9Hbc0kt0GL59aUTCfz07snIzav0-HsQ/edit?gid=801915987#gid=801915987"
+    sheet_url = st.sidebar.text_input("📄 Google Sheet URL (public or private)", value=DEFAULT_SHEET_URL)
 
     df = None
     if sheet_url:
@@ -455,19 +457,46 @@ You have **two options**:
         mime="text/markdown"
     )
 
-    try:
-        from fpdf import FPDF
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        pdf.set_font("Arial", size=12)
-        pdf.multi_cell(0, 10, "This is the documentation for the dashboard...")
-        pdf_bytes = pdf.output(dest="S").encode("latin1")
-        st.download_button(
-            label="📥 Download Documentation (PDF)",
-            data=pdf_bytes,
-            file_name="Survivor_Dashboard_Documentation.pdf",
-            mime="application/pdf"
-        )
-    except ImportError:
-        st.warning("Install `fpdf` to enable PDF download: pip install fpdf")
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
+    import streamlit as st
+    import io
+
+    # Create in-memory buffer
+    buffer = io.BytesIO()
+
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # Margins
+    left_margin = 15 * mm
+    top_margin = height - 15 * mm
+    line_height = 12  # points
+    y = top_margin
+
+    # Use built-in font
+    c.setFont("Helvetica", 12)
+
+    # Split documentation into lines
+    for line in doc_text.split("\n"):
+        # Strip non-ASCII characters if needed
+        safe_line = ''.join([ch if ord(ch) < 128 else '' for ch in line])
+        if y < 15:  # Start a new page if near bottom
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y = top_margin
+        c.drawString(left_margin, y, safe_line)
+        y -= line_height
+
+    c.save()
+    buffer.seek(0)
+    pdf_bytes = buffer.read()
+
+    # Streamlit download button
+    st.download_button(
+        label="📥 Download Documentation (PDF)",
+        data=pdf_bytes,
+        file_name="Survivor_Dashboard.pdf",
+        mime="application/pdf"
+    )
